@@ -1,0 +1,18 @@
+[package]
+name = "shepherd-providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+shepherd-core = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+futures-util = { workspace = true }
+bytes = { workspace = true }
+bollard = { workspace = true }
+tar = { workspace = true }
+chrono = { version = "0.4", features = ["clock"] }
