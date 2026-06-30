@@ -17,6 +17,6 @@ bollard = { workspace = true }
 tar = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 chrono = { version = "0.4", features = ["clock"] }
-reqwest = { version = "0.12", features = ["json"] }
-daytona-client = "0.5.0"
+reqwest = { version = "0.12", features = ["json", "multipart"] }
