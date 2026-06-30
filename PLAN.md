@@ -12,6 +12,48 @@ that attaches and detaches at will.
 This document is the source of truth for what we are building and why. Read it
 top to bottom before touching code.
 
+## Status (as of 2026-06-30)
+
+What works and is tested on the local Docker provider, end to end:
+
+- Core trait and types, Docker provider, git seeding with dirty overlay, headless
+  Claude runner and stream-json parser, SQLite session store.
+- `shepherd` CLI: `run` (with `--agent`), `ls`, `attach`, `logs`, `rm`, `serve`,
+  and a default full-screen TUI.
+- The agent runs DETACHED inside a tmux session in the box, so it survives the
+  CLI exiting and the laptop powering off; reattach to the live session with
+  `shepherd attach` (Ctrl-] detaches without killing it).
+- Telegram messaging bridge (`shepherd serve`): `/ls`, `/use`, text a turn, the
+  box is auto-resumed if it had auto-stopped, reply comes back to the chat.
+- Full-screen ratatui TUI: workspaces grouped in a sidebar, live statuses
+  (loading/working/idle/suspended/done/error) with a spinner, a detail+activity
+  panel, footer keybindings.
+
+What is validated against live Daytona (the cloud provider):
+
+- create, exec, file put/get, list, suspend/resume, destroy, and connection_info
+  (web terminal URL plus a minted SSH token). `shepherd run` seeding works on the
+  default snapshot (it already has git). The Daytona provider is hand-rolled on
+  the REST API (the daytona-client crate was dropped, it drifts from the API).
+
+What is NOT done yet (good places to pick up):
+
+- A cloud `--agent` run end to end: needs a Daytona snapshot with Node + claude
+  (build from `images/base/Dockerfile`). The agent pipeline itself is validated
+  on Docker; only the cloud image packaging remains.
+- A fully interactive `ssh` attach session on Daytona (token mint is validated;
+  the interactive terminal needs a real TTY to try).
+- The persistence triad is only partially built: code persists via the per
+  session git branch and the box's own disk, but the SessionStore transcript
+  mirror (S3/Postgres) and the CLAUDE.md/artifact sync (section 4) are not built.
+- Fan out (M9): multiple coordinated sessions.
+- MCP config sync and OAuth surfacing (section 5, part of M8).
+- The reconcile-back UX (git pull / PR review prompts in the TUI).
+- Push notifications from the bridge (finish/error/needs-input).
+- Embedded live terminal panes in the TUI (a vt100 multiplexer) were deferred on
+  purpose until the cloud PTY story is settled; `attach` covers live terminals
+  today.
+
 ## 1. The problem
 
 Local coding agents (Claude Code, Codex, Cursor CLI) die when their process
@@ -132,6 +174,15 @@ loop:
   the right env, so swapping Claude Code for another CLI is a runner config, not
   a rewrite.
 
+How it actually runs (built): the runner writes the invocation to a script and
+launches it inside a detached tmux session named `shepherd` in the box, tee'ing
+output to `.shepherd/agent.log`. tmux makes the agent reattachable (the herdr
+"panes stay alive" model) and detaching never kills it; the log lets
+`shepherd logs` work without an interactive terminal. The box runs as a non root
+user (claude refuses `--dangerously-skip-permissions` as root) with the workspace
+under that user's home (`/home/agent/workspace` on docker, `/home/daytona/...`
+on Daytona).
+
 ## 7. Provider abstraction
 
 A single SandboxProvider trait, with concrete adapters behind it. Anthropic's own
@@ -140,26 +191,37 @@ Vercel Sandbox (plus self hosted Docker, gVisor, Firecracker).
 
 ```rust
 trait SandboxProvider {
+    fn id(&self) -> ProviderId;
     async fn create(&self, spec: SandboxSpec) -> Result<Sandbox>;
+    async fn get(&self, id: &SandboxId) -> Result<Option<Sandbox>>;
+    async fn list(&self, labels: &HashMap<String, String>) -> Result<Vec<Sandbox>>;
     async fn exec(&self, id: &SandboxId, cmd: &[String], opts: ExecOptions) -> Result<ExecResult>;
     async fn attach_pty(&self, id: &SandboxId, cmd: &[String], opts: PtyOptions) -> Result<PtySession>;
-    async fn put_file(&self, id: &SandboxId, path: &str, content: &[u8]) -> Result<()>;
+    async fn connection_info(&self, id: &SandboxId) -> Result<ConnectionInfo>; // web/ssh
+    async fn put_file(&self, id: &SandboxId, path: &str, content: &[u8], mode: u32) -> Result<()>;
     async fn get_file(&self, id: &SandboxId, path: &str) -> Result<Vec<u8>>;
-    async fn snapshot(&self, id: &SandboxId) -> Result<String>;
-    async fn suspend(&self, id: &SandboxId) -> Result<()>;
-    async fn resume(&self, id: &SandboxId) -> Result<()>;
+    async fn snapshot(&self, id: &SandboxId) -> Result<String>;     // default: NotSupported
+    async fn suspend(&self, id: &SandboxId) -> Result<()>;          // default: NotSupported
+    async fn resume(&self, id: &SandboxId) -> Result<()>;           // default: NotSupported
     async fn destroy(&self, id: &SandboxId) -> Result<()>;
 }
 ```
 
-Adapter roadmap (priority order):
-1. docker (local): develop and test the entire flow with zero cloud cost or
-   accounts. First adapter.
-2. e2b: Firecracker microVM isolation, open source, cheap, agent purpose built.
-   First cloud target.
-3. fly: Machines REST API, best suspend to disk plus volumes for cheap always on
-   idle.
-4. Later: Daytona, Modal, Cloudflare.
+Two interactive models: local providers stream an in-process PTY via
+`attach_pty` (docker); cloud providers expose `connection_info` (a web terminal
+URL plus an ssh target) and `shepherd attach` uses the system ssh client. The
+selected backend is chosen by `SHEPHERD_PROVIDER` (default `docker`).
+
+Adapter roadmap and status:
+1. docker (local), DONE and tested: develop and test the entire flow with zero
+   cloud cost. suspend=pause, resume=unpause, snapshot=commit; interactive
+   attach via the docker exec TTY stream.
+2. daytona (cloud), DONE and validated live: the chosen first cloud target.
+   Hand-rolled on the Daytona REST API with reqwest and lenient parsing (the
+   daytona-client crate was dropped, it drifts from the live API). suspend=stop,
+   resume=start, snapshot=backup; auto-stop (20m) and auto-archive (1d) cost
+   guardrails; attach via web terminal URL + minted ssh token.
+3. Later, behind the same trait: E2B, Fly Machines, Modal, Cloudflare.
 
 ## 8. Architecture
 
@@ -193,16 +255,23 @@ contract.
   the provider trait surface, good async ecosystem.
 - Async runtime: tokio.
 - Docker provider: bollard (async Docker Engine API client).
+- Daytona provider: hand-rolled on reqwest (json + multipart) with lenient serde,
+  no third-party Daytona SDK.
 - CLI parsing: clap.
-- TUI: ratatui plus crossterm. Reattachable PTY via portable-pty locally and the
-  Docker exec attach stream for boxes.
+- TUI: ratatui plus crossterm (event-stream). Reattach is done via a tmux session
+  inside the box (the box's own multiplexer), reached over the docker exec TTY
+  stream locally or ssh / web terminal on cloud. No portable-pty.
+- Telegram bridge: reqwest long polling (getUpdates), no webhook or open ports.
 - Serialization: serde and serde_json (stream-json parsing, state files).
-- Errors: thiserror in library crates, anyhow at the binary boundary.
-- Transport: websocket (CLI to daemon). Reconnect with exponential backoff plus
-  jitter (500ms, double, cap 30s) and a stateless resume protocol.
-- Persistence (dev): SQLite plus local FS object store, pluggable to
-  Postgres/S3/Redis.
-- Fully custom. No dependency on or coupling to any existing multiplexer.
+- Errors: thiserror in the core crate, anyhow at the binary boundary.
+- Persistence (dev): SQLite (rusqlite, bundled) at `~/.shepherd/state.sqlite`.
+  Pluggable to Postgres later (the Store surface is small).
+- Fully custom. No dependency on or coupling to the herdr product (tmux inside
+  the box is a generic in-box tool, not herdr).
+
+Not yet built from this list: the websocket CLI-to-daemon transport and the
+object store for transcripts/artifacts. Today the CLI talks to providers
+directly; there is no separate daemon process yet.
 
 ## 10. Repo layout
 
@@ -210,35 +279,49 @@ contract.
 shepherd/
   Cargo.toml            workspace manifest
   PLAN.md               this file
+  images/base/          Dockerfile for the agent image (git, node, claude, tmux)
+  docs/                 daytona.md, mobile.md
   crates/
-    core/               domain types, SandboxProvider trait, Session model
-    providers/          adapters: docker (dev), e2b, fly
-    agent/              headless Claude runner, stream-json parser, git seeding
-    cli/                the `shepherd` binary: CLI plus TUI plus local daemon
+    core/               domain types, SandboxProvider trait, Session, errors
+    providers/          adapters: docker (bollard), daytona (reqwest)
+                        examples/: smoke, daytona_smoke, daytona_prune, seed
+    agent/              ClaudeRunner, stream-json parser, git seeding, capture
+    cli/                the `shepherd` binary
+                        main.rs (run/ls/attach/logs/rm/serve/tui dispatch),
+                        store.rs (sqlite), attach.rs, bot.rs (telegram),
+                        tui.rs (ratatui board)
 ```
 
 ## 11. Milestones
 
-- M0 Scaffold: workspace, plan, tooling.
-- M1 Core contracts: SandboxProvider, Session, WorkspaceSpec, AgentRunner types.
-- M2 Docker provider: create/exec/attach_pty/put-get/snapshot/suspend/destroy
-  against local Docker. The whole loop, no cloud.
-- M3 Git seeding: clone plus dirty state overlay into a sandbox.
-- M4 Headless Claude runner: claude -p, capture session id, resume, parse
+Status markers: [done], [partial], [todo].
+
+- M0 [done] Scaffold: workspace, plan, tooling.
+- M1 [done] Core contracts: SandboxProvider, Session, WorkspaceSpec, AgentRunner.
+- M2 [done] Docker provider: create/exec/attach_pty/put-get/snapshot/suspend/
+  destroy against local Docker.
+- M3 [done] Git seeding: clone plus dirty state overlay into a sandbox.
+- M4 [done] Headless Claude runner: claude -p, capture session id, resume, parse
   stream-json.
-- M5 SessionStore (sqlite/fs): persist and resume transcripts across boxes.
-- M6 CLI plus attach: `shepherd run`, `shepherd ls`, `shepherd attach` with a
-  reattachable PTY. Vertical slice: laptop off, agent running, reattach later.
-- M7 Cloud provider (E2B): first real always on target plus snapshot/suspend.
-- M8 Secrets plus MCP: secret injection, MCP config sync, OAuth surfacing.
-- M9 Fan out: multiple sessions, status board, branch per session.
-- M10 Cloud and mobile attach: wire interactive attach for the cloud provider
-  and reach a running session from a phone terminal app (herdr parity, but the
-  box is in the cloud). Daytona exposes both a PTY API and SSH access for this;
-  the Rust crate is REST only, so this needs a small websocket or SSH bridge.
-- M11 Messaging bridge: a chat bot (Telegram first) bound to sessions, so you
-  text a prompt from your phone and the cloud agent works and replies, plus push
-  notifications when an agent finishes or needs input.
+- M5 [partial] Session store: SQLite session registry done. The transcript
+  mirror (resume across a fresh box via S3/Postgres) is NOT done.
+- M6 [done] CLI plus attach: run / ls / attach / logs / rm; agent runs detached
+  in tmux; reattach with attach. Vertical slice proven.
+- M7 [done] Cloud provider: Daytona (not E2B), validated live. Always on,
+  snapshot/suspend, cost guardrails.
+- M8 [partial] Secrets plus MCP: secret injection (ANTHROPIC_API_KEY) done and
+  the base image carries MCP runtimes. MCP config sync and OAuth surfacing: todo.
+- M9 [todo] Fan out: multiple coordinated sessions.
+- M10 [partial] Cloud and mobile attach: web terminal URL + ssh-token attach for
+  Daytona done; a fully interactive ssh session not yet exercised live.
+- M11 [done] Messaging bridge: Telegram `shepherd serve` with /ls, /use, and
+  text-a-turn (auto-resume + reply). Push notifications: todo.
+- M12 [done] TUI: herdr-style full-screen session board (workspaces, live
+  statuses, detail+activity, keybindings).
+- M13 [todo] Persistence triad completion: transcript mirror + CLAUDE.md/artifact
+  sync, plus the reconcile-back UX (section 4).
+- M14 [todo] Embedded live terminal panes in the TUI (vt100 multiplexer), once
+  the cross-provider PTY story is settled.
 
 ## 12. Mobile and messaging control
 
