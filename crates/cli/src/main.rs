@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-use shepherd_agent::{capture_local_workspace, seed_workspace};
+use shepherd_agent::{capture_local_workspace, seed_workspace, ClaudeRunner};
+use shepherd_core::agent::{AgentEvent, AgentRunner, RunRequest};
 use shepherd_core::ids::SessionId;
 use shepherd_core::sandbox::{SandboxProvider, SandboxSpec};
 use shepherd_core::session::{default_branch_for, Session, SessionStatus};
@@ -18,9 +19,17 @@ use shepherd_providers::DockerProvider;
 
 use store::Store;
 
-/// Default base image. Has git, sh, and tar, which is all seeding needs. A
-/// richer image with node and the claude CLI lands with the secrets/MCP work.
+/// Default base image for seeding only. Has git, sh, and tar. Lightweight, used
+/// when you are not launching the agent.
 const DEFAULT_IMAGE: &str = "alpine/git";
+
+/// Image used when `--agent` is set: adds Node and the claude CLI. Build it with
+/// images/base/build.sh.
+const AGENT_IMAGE: &str = "shepherd-base:latest";
+
+/// Secret env vars forwarded from the local environment into the sandbox when
+/// running the agent. Injected as env, never written to files (PLAN.md section 5).
+const FORWARDED_SECRETS: &[&str] = &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 
 const SESSION_LABEL: &str = "shepherd.session";
 
@@ -38,7 +47,7 @@ enum Command {
         /// Path to the local git repo to seed from.
         #[arg(long, default_value = ".")]
         repo: PathBuf,
-        /// Optional task prompt (used as the session title for now).
+        /// Task prompt. Required with --agent.
         #[arg(long)]
         prompt: Option<String>,
         /// Human readable session title.
@@ -47,6 +56,10 @@ enum Command {
         /// Base image for the sandbox.
         #[arg(long, default_value = DEFAULT_IMAGE)]
         image: String,
+        /// After seeding, launch the headless agent with --prompt. Requires the
+        /// agent image and an ANTHROPIC_API_KEY in the environment.
+        #[arg(long)]
+        agent: bool,
     },
     /// Attach an interactive terminal to a session's sandbox.
     Attach {
@@ -71,8 +84,8 @@ async fn main() -> Result<()> {
     )?;
 
     match cli.command {
-        Command::Run { repo, prompt, title, image } => {
-            run(&store, &provider, &repo, prompt, title, &image).await
+        Command::Run { repo, prompt, title, image, agent } => {
+            run(&store, &provider, &repo, prompt, title, &image, agent).await
         }
         Command::Attach { session } => attach::attach(&store, &provider, &session).await,
         Command::Ls => ls(&store, &provider).await,
@@ -80,6 +93,7 @@ async fn main() -> Result<()> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     store: &Store,
     provider: &DockerProvider,
@@ -87,7 +101,29 @@ async fn run(
     prompt: Option<String>,
     title: Option<String>,
     image: &str,
+    agent: bool,
 ) -> Result<()> {
+    if agent && prompt.is_none() {
+        anyhow::bail!("--agent requires --prompt");
+    }
+    // Choose the agent image automatically unless the user pinned one.
+    let image = if agent && image == DEFAULT_IMAGE { AGENT_IMAGE } else { image };
+
+    // Gather secrets to inject as env (never written to files).
+    let mut secret_env = HashMap::new();
+    if agent {
+        for key in FORWARDED_SECRETS {
+            if let Ok(val) = std::env::var(key) {
+                secret_env.insert(key.to_string(), val);
+            }
+        }
+        if secret_env.is_empty() {
+            anyhow::bail!(
+                "--agent needs credentials; set ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN) in your environment"
+            );
+        }
+    }
+
     let repo = repo.canonicalize().with_context(|| format!("repo path {repo:?}"))?;
     println!("capturing workspace from {repo:?} ...");
     let git_spec = capture_local_workspace(&repo)?;
@@ -113,6 +149,7 @@ async fn run(
         .create(SandboxSpec {
             image: image.to_string(),
             labels,
+            env: secret_env,
             ..Default::default()
         })
         .await?;
@@ -148,7 +185,12 @@ async fn run(
             println!();
             println!("session {session_id} ready");
             println!("  sandbox {}  workspace {mount}  branch {branch}", sandbox.id);
-            println!("  attach: shepherd attach {session_id}");
+
+            if agent {
+                run_agent(store, provider, &mut session, &sandbox.id, &mount, &prompt.unwrap_or_default()).await?;
+            } else {
+                println!("  attach: shepherd attach {session_id}");
+            }
             Ok(())
         }
         Err(e) => {
@@ -159,6 +201,74 @@ async fn run(
             // Box left around for inspection; remove with `shepherd rm`.
             Err(e.into())
         }
+    }
+}
+
+/// Launch the headless agent in the seeded box and stream its events.
+async fn run_agent(
+    store: &Store,
+    provider: &DockerProvider,
+    session: &mut Session,
+    sandbox_id: &shepherd_core::ids::SandboxId,
+    mount: &str,
+    prompt: &str,
+) -> Result<()> {
+    session.status = SessionStatus::Running;
+    session.updated_at = now();
+    store.upsert(session)?;
+
+    println!("  running agent ...");
+    println!();
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(256);
+    let printer = tokio::spawn(async move {
+        while let Some(ev) = rx.recv().await {
+            print_event(&ev);
+        }
+    });
+
+    let runner = ClaudeRunner::default();
+    let req = RunRequest {
+        sandbox_id: sandbox_id.clone(),
+        prompt: prompt.to_string(),
+        cwd: mount.to_string(),
+        resume_agent_session_id: session.agent_session_id.clone(),
+        allowed_tools: Vec::new(),
+        env: HashMap::new(),
+    };
+    let result = runner.run(provider, req, tx).await;
+    let _ = printer.await;
+
+    match result {
+        Ok(run) => {
+            session.agent_session_id = run.agent_session_id;
+            session.status = SessionStatus::Idle;
+            session.updated_at = now();
+            store.upsert(session)?;
+            println!();
+            println!("  agent finished (exit {}). reattach: shepherd attach {}", run.exit_code, session.id);
+            Ok(())
+        }
+        Err(e) => {
+            session.status = SessionStatus::Error;
+            session.error = Some(e.to_string());
+            session.updated_at = now();
+            store.upsert(session)?;
+            Err(e.into())
+        }
+    }
+}
+
+fn print_event(ev: &AgentEvent) {
+    match ev {
+        AgentEvent::Session { agent_session_id } => println!("  [session {agent_session_id}]"),
+        AgentEvent::Text { text } => println!("{text}"),
+        AgentEvent::ToolUse { name, .. } => println!("  [tool: {name}]"),
+        AgentEvent::ToolResult { name, ok } => {
+            println!("  [tool {name}: {}]", if *ok { "ok" } else { "error" })
+        }
+        AgentEvent::Error { message } => eprintln!("  [error: {message}]"),
+        AgentEvent::Done { exit_code } => println!("  [done: exit {exit_code}]"),
     }
 }
 
