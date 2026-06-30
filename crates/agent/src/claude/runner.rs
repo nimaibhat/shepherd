@@ -37,6 +37,24 @@ impl Default for ClaudeRunner {
 }
 
 impl ClaudeRunner {
+    /// Build a shell command that launches the agent DETACHED, writing combined
+    /// output to `log_path`, and returns immediately (printing the pid).
+    ///
+    /// This is what makes a run survive the client disconnecting and the laptop
+    /// powering off: the claude process is reparented to the box's init and keeps
+    /// running independently of whatever started it. Read progress later from
+    /// `log_path` (e.g. `shepherd logs`).
+    pub fn detached_launch(&self, req: &RunRequest, log_path: &str) -> String {
+        let cmd = self
+            .build_command(req)
+            .iter()
+            .map(|a| sh_quote(a))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let log = sh_quote(log_path);
+        format!("mkdir -p \"$(dirname {log})\" && nohup {cmd} >{log} 2>&1 & echo $!")
+    }
+
     fn build_command(&self, req: &RunRequest) -> Vec<String> {
         let mut cmd = vec![
             self.bin.clone(),
@@ -62,6 +80,19 @@ impl ClaudeRunner {
             cmd.push("--dangerously-skip-permissions".into());
         }
         cmd
+    }
+}
+
+/// Single-quote a shell argument, escaping embedded single quotes.
+fn sh_quote(arg: &str) -> String {
+    let safe = !arg.is_empty()
+        && arg
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'/' | b':' | b'=' | b','));
+    if safe {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', r#"'\''"#))
     }
 }
 

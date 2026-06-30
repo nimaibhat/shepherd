@@ -9,10 +9,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-use shepherd_agent::{capture_local_workspace, seed_workspace, ClaudeRunner};
-use shepherd_core::agent::{AgentEvent, AgentRunner, RunRequest};
+use shepherd_agent::{capture_local_workspace, seed_workspace, ClaudeRunner, ClaudeStreamParser};
+use shepherd_core::agent::{AgentEvent, RunRequest};
 use shepherd_core::ids::SessionId;
-use shepherd_core::sandbox::{SandboxProvider, SandboxSpec};
+use shepherd_core::sandbox::{ExecOptions, SandboxProvider, SandboxResources, SandboxSpec};
 use shepherd_core::session::{default_branch_for, Session, SessionStatus};
 use shepherd_core::workspace::WorkspaceSpec;
 use shepherd_providers::{DaytonaProvider, DockerProvider};
@@ -66,6 +66,14 @@ enum Command {
         /// Session id.
         session: String,
     },
+    /// Show the agent's output log for a session (for detached --agent runs).
+    Logs {
+        /// Session id.
+        session: String,
+        /// Print the raw log instead of parsed events.
+        #[arg(long)]
+        raw: bool,
+    },
     /// List sessions and their live sandbox status.
     Ls,
     /// Tear down a session and its sandbox.
@@ -87,6 +95,7 @@ async fn main() -> Result<()> {
             run(&store, provider, &repo, prompt, title, &image, agent).await
         }
         Command::Attach { session } => attach::attach(&store, provider, &session).await,
+        Command::Logs { session, raw } => logs(&store, provider, &session, raw).await,
         Command::Ls => ls(&store, provider).await,
         Command::Rm { session } => rm(&store, provider, &session).await,
     }
@@ -151,7 +160,7 @@ async fn run(
     // Place the workspace where the provider's default user can actually write.
     // Daytona sandboxes run as the `daytona` user, so / is not writable.
     if git_spec.mount_path.is_none() {
-        git_spec.mount_path = Some(default_mount_for(&provider.id()).to_string());
+        git_spec.mount_path = Some(default_mount_for(&provider.id(), agent).to_string());
     }
     let dirty = git_spec
         .dirty_overlay
@@ -170,13 +179,21 @@ async fn run(
     let mut labels = HashMap::new();
     labels.insert(SESSION_LABEL.to_string(), session_id.to_string());
 
+    // Give agent boxes more headroom than the 1 vCPU / 1 GB default so node and
+    // claude do not get starved or OOM-killed.
+    let resources = if agent {
+        SandboxResources { cpus: Some(2.0), memory_mb: Some(2048), disk_mb: None }
+    } else {
+        SandboxResources::default()
+    };
+
     println!("creating sandbox ({image}) ...");
     let sandbox = provider
         .create(SandboxSpec {
             image: image.to_string(),
             labels,
             env: secret_env,
-            ..Default::default()
+            resources,
         })
         .await?;
 
@@ -213,7 +230,7 @@ async fn run(
             println!("  sandbox {}  workspace {mount}  branch {branch}", sandbox.id);
 
             if agent {
-                run_agent(store, provider, &mut session, &sandbox.id, &mount, &prompt.unwrap_or_default()).await?;
+                launch_agent(store, provider, &mut session, &sandbox.id, &mount, &prompt.unwrap_or_default()).await?;
             } else {
                 println!("  attach: shepherd attach {session_id}");
             }
@@ -230,8 +247,9 @@ async fn run(
     }
 }
 
-/// Launch the headless agent in the seeded box and stream its events.
-async fn run_agent(
+/// Launch the headless agent DETACHED inside the box so it keeps running after
+/// the CLI exits or the laptop powers off. Watch it later with `shepherd logs`.
+async fn launch_agent(
     store: &Store,
     provider: &dyn SandboxProvider,
     session: &mut Session,
@@ -239,20 +257,7 @@ async fn run_agent(
     mount: &str,
     prompt: &str,
 ) -> Result<()> {
-    session.status = SessionStatus::Running;
-    session.updated_at = now();
-    store.upsert(session)?;
-
-    println!("  running agent ...");
-    println!();
-
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(256);
-    let printer = tokio::spawn(async move {
-        while let Some(ev) = rx.recv().await {
-            print_event(&ev);
-        }
-    });
-
+    let log_path = agent_log_path(mount);
     let runner = ClaudeRunner::default();
     let req = RunRequest {
         sandbox_id: sandbox_id.clone(),
@@ -262,27 +267,75 @@ async fn run_agent(
         allowed_tools: Vec::new(),
         env: HashMap::new(),
     };
-    let result = runner.run(provider, req, tx).await;
-    let _ = printer.await;
+    let script = runner.detached_launch(&req, &log_path);
+    let res = provider
+        .exec(
+            sandbox_id,
+            &["sh".into(), "-c".into(), script],
+            ExecOptions { cwd: Some(mount.to_string()), env: HashMap::new() },
+        )
+        .await?;
 
-    match result {
-        Ok(run) => {
-            session.agent_session_id = run.agent_session_id;
-            session.status = SessionStatus::Idle;
-            session.updated_at = now();
-            store.upsert(session)?;
-            println!();
-            println!("  agent finished (exit {}). reattach: shepherd attach {}", run.exit_code, session.id);
-            Ok(())
+    session.status = SessionStatus::Running;
+    session.updated_at = now();
+    store.upsert(session)?;
+
+    println!("  agent launched in background (pid {})", res.stdout.trim());
+    println!("  watch:  shepherd logs {}", session.id);
+    println!("  (you can close your laptop now; it keeps running in the sandbox)");
+    Ok(())
+}
+
+/// Show a session's detached agent log, parsed into events (or raw with --raw).
+async fn logs(store: &Store, provider: &dyn SandboxProvider, session: &str, raw: bool) -> Result<()> {
+    let id: SessionId = session.into();
+    let Some(mut s) = store.get(&id)? else {
+        anyhow::bail!("no such session: {session}");
+    };
+    let Some(sandbox_id) = s.sandbox_id.clone() else {
+        anyhow::bail!("session {session} has no sandbox");
+    };
+    let mount = s.workspace.mount_path().to_string();
+    let bytes = match provider.get_file(&sandbox_id, &agent_log_path(&mount)).await {
+        Ok(b) => b,
+        Err(_) => {
+            println!("no agent log yet (launch one with: shepherd run --agent --prompt ...)");
+            return Ok(());
         }
-        Err(e) => {
-            session.status = SessionStatus::Error;
-            session.error = Some(e.to_string());
-            session.updated_at = now();
-            store.upsert(session)?;
-            Err(e.into())
+    };
+
+    if raw {
+        use std::io::Write;
+        std::io::stdout().write_all(&bytes).ok();
+        return Ok(());
+    }
+
+    let text = String::from_utf8_lossy(&bytes);
+    let mut parser = ClaudeStreamParser::new();
+    let mut events = parser.feed(&text);
+    events.extend(parser.flush());
+    if events.is_empty() {
+        // Not stream-json yet (e.g. an early error). Show what we have.
+        print!("{text}");
+    } else {
+        for ev in &events {
+            print_event(ev);
         }
     }
+
+    // Capture the agent session id for later resume, once it appears.
+    if s.agent_session_id.is_none() {
+        if let Some(sid) = parser.agent_session_id() {
+            s.agent_session_id = Some(sid.to_string());
+            store.upsert(&s)?;
+        }
+    }
+    Ok(())
+}
+
+/// Convention for where a session's detached agent writes its log inside the box.
+fn agent_log_path(mount: &str) -> String {
+    format!("{mount}/.shepherd/agent.log")
 }
 
 fn print_event(ev: &AgentEvent) {
@@ -346,11 +399,13 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// Where to clone the workspace, per provider. Daytona runs as the unprivileged
-/// `daytona` user whose home is /home/daytona, so / is not writable.
-fn default_mount_for(provider_id: &str) -> &'static str {
+/// Where to clone the workspace, where the box's user can actually write.
+/// Daytona runs as `daytona`; the agent image (shepherd-base) runs as `agent`;
+/// the plain seeding image runs as root, so / is fine there.
+fn default_mount_for(provider_id: &str, agent: bool) -> &'static str {
     match provider_id {
         "daytona" => "/home/daytona/workspace",
+        _ if agent => "/home/agent/workspace",
         _ => "/workspace",
     }
 }

@@ -42,6 +42,13 @@ use shepherd_core::sandbox::{
 const MANAGED_LABEL: &str = "shepherd.managed";
 const READY_TIMEOUT_SECS: u64 = 180;
 
+// Cost guardrails so a forgotten box cannot quietly run up the bill. Suspend
+// (stop) frees CPU and RAM after a short idle; archive (cold storage, no quota
+// cost) after a day stopped. Neither deletes anything: resume/restore from
+// anywhere, no laptop required. Auto-delete is intentionally left disabled.
+const AUTO_STOP_MINUTES: u32 = 20;
+const AUTO_ARCHIVE_MINUTES: u32 = 1440; // 1 day
+
 pub struct DaytonaProvider {
     client: DaytonaClient,
 }
@@ -80,6 +87,8 @@ impl SandboxProvider for DaytonaProvider {
             // NOTE: Daytona sizes memory/disk in GB; our spec is in MB.
             memory: spec.resources.memory_mb.map(|m| (m as f64 / 1024.0).ceil() as u32),
             disk: spec.resources.disk_mb.map(|d| (d as f64 / 1024.0).ceil() as u32),
+            auto_stop_interval: Some(AUTO_STOP_MINUTES),
+            auto_archive_interval: Some(AUTO_ARCHIVE_MINUTES),
             ..Default::default()
         };
 

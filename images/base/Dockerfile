@@ -17,4 +17,9 @@ RUN apt-get update \
 # The headless agent we drive (PLAN.md section 6).
 RUN npm install -g @anthropic-ai/claude-code
 
-WORKDIR /workspace
+# claude refuses --dangerously-skip-permissions when running as root, so the box
+# runs as a non-root user. The workspace lives under this user's home so it is
+# writable (Shepherd seeds into /home/agent/workspace for the docker provider).
+RUN useradd --create-home --shell /bin/bash agent
+USER agent
+WORKDIR /home/agent
