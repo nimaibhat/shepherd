@@ -4,15 +4,16 @@ The Daytona provider runs sandboxes in Daytona's cloud, so a session keeps
 working after you shut your laptop. This is the first backend that delivers the
 core promise; the local Docker provider still needs your machine on.
 
-Status: the adapter is implemented against the (community) `daytona-client` 0.5
-crate but has not yet been validated against the live service. Two known risks
-to confirm on the first real run:
+Status: validated against the live service. Create, exec, file put/get, list,
+suspend/resume, destroy, and interactive connection info (web terminal URL plus
+a minted SSH token) all work end to end. The provider is hand-rolled on the
+Daytona REST API with reqwest (the community daytona-client crate was dropped:
+it deserialized responses into strict structs that drift from the live API).
 
-- The crate calls Daytona's older `/toolbox/{id}/toolbox/...` exec and file
-  endpoints, which the current API marks deprecated. They should still work; if
-  not, the fix is to hand-roll those calls against the current API.
-- General first-run roughness. See the NOTE comments in
-  `crates/providers/src/daytona/provider.rs`.
+Good news from validation: the Daytona default snapshot already includes git, so
+`shepherd run` seeding (clone plus dirty overlay) works without building a custom
+snapshot. You only need a custom snapshot to run the agent (`--agent`), since
+that also needs Node and the claude CLI.
 
 ## 1. Get an API key
 
@@ -22,13 +23,20 @@ Create a key at https://app.daytona.io/dashboard/keys and export it:
 export DAYTONA_API_KEY=...
 ```
 
-## 2. Build the agent snapshot
+## 2a. Seeding only (no custom snapshot needed)
 
-Daytona boots sandboxes from snapshots (reusable templates baked from an image
-definition), not raw Docker images, and the unofficial Rust crate only supports
-the snapshot path. So create a snapshot that has the agent toolchain (git, Node,
-the claude CLI). The source image is
-[`images/base/Dockerfile`](../images/base/Dockerfile).
+If you just want to seed a repo into a cloud box and work in it (no agent), the
+default snapshot already has git, so pass an empty image:
+
+```sh
+SHEPHERD_PROVIDER=daytona shepherd run --repo . --image "" --title "my session"
+```
+
+## 2b. Build the agent snapshot (for --agent)
+
+To run the agent, the snapshot also needs Node and the claude CLI. Build a
+snapshot from [`images/base/Dockerfile`](../images/base/Dockerfile) (which has
+git, Node, claude, and tmux).
 
 Easiest is the Daytona CLI or one of the official SDKs. For example, with the
 Python SDK:
@@ -79,10 +87,16 @@ run continues in the cloud. Check on it later with `shepherd ls`.
 - Cost while idle: `suspend` maps to Daytona `stop` (frees CPU and RAM, keeps
   disk); `resume` maps to `start`. Archived sandboxes have no quota impact.
 
+## Interactive access
+
+`shepherd attach <session>` works on Daytona: it prints the web terminal URL
+(open from a phone, no app) and drops you into the box over the system `ssh`
+client (minting a short-lived SSH token), where the agent's tmux session is
+reattachable. See [mobile.md](./mobile.md).
+
 ## Known gaps (cloud)
 
-- `shepherd attach` is not wired for Daytona yet. Daytona does expose a PTY API
-  and SSH access, which are the path for interactive cloud terminals and the
-  mobile attach goal (PLAN.md M10), but the Rust crate is REST only, so this
-  needs a small websocket/SSH bridge. For now a `--agent` run is fire-and-forget:
-  it survives power-off and you watch it with `ls`.
+- Validated: lifecycle, seeding, files, and connection info (web terminal URL
+  plus SSH token mint). Not yet exercised live: an end-to-end `--agent` run on a
+  custom snapshot, and a fully interactive `ssh` attach session (the token mint
+  is confirmed; the interactive terminal needs a real TTY to try).
