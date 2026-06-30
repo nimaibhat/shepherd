@@ -3,6 +3,7 @@
 mod attach;
 mod bot;
 mod store;
+mod tui;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -45,7 +46,7 @@ const AGENT_LOG_REL: &str = ".shepherd/agent.log";
 #[command(name = "shepherd", version, about = "Persistent cloud sandbox AI coding agents")]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -91,6 +92,8 @@ enum Command {
     },
     /// Run the messaging bridge (text your agents from your phone over Telegram).
     Serve,
+    /// Open the full-screen session board (default when no command is given).
+    Tui,
 }
 
 #[tokio::main]
@@ -101,14 +104,15 @@ async fn main() -> Result<()> {
     let provider = provider.as_ref();
 
     match cli.command {
-        Command::Run { repo, prompt, title, image, agent } => {
+        None | Some(Command::Tui) => tui::run_tui(&store, provider).await,
+        Some(Command::Run { repo, prompt, title, image, agent }) => {
             run(&store, provider, &repo, prompt, title, &image, agent).await
         }
-        Command::Attach { session } => attach::attach(&store, provider, &session).await,
-        Command::Logs { session, raw } => logs(&store, provider, &session, raw).await,
-        Command::Ls => ls(&store, provider).await,
-        Command::Rm { session } => rm(&store, provider, &session).await,
-        Command::Serve => bot::run_bot(&store, provider).await,
+        Some(Command::Attach { session }) => attach::attach(&store, provider, &session).await,
+        Some(Command::Logs { session, raw }) => logs(&store, provider, &session, raw).await,
+        Some(Command::Ls) => ls(&store, provider).await,
+        Some(Command::Rm { session }) => rm(&store, provider, &session).await,
+        Some(Command::Serve) => bot::run_bot(&store, provider).await,
     }
 }
 
