@@ -15,7 +15,7 @@ use shepherd_core::ids::SessionId;
 use shepherd_core::sandbox::{SandboxProvider, SandboxSpec};
 use shepherd_core::session::{default_branch_for, Session, SessionStatus};
 use shepherd_core::workspace::WorkspaceSpec;
-use shepherd_providers::DockerProvider;
+use shepherd_providers::{DaytonaProvider, DockerProvider};
 
 use store::Store;
 
@@ -103,8 +103,13 @@ fn make_provider() -> Result<Box<dyn SandboxProvider>> {
                 .context("could not connect to Docker; is the Docker daemon running?")?;
             Ok(Box::new(p))
         }
+        "daytona" => {
+            let p = DaytonaProvider::from_env()
+                .context("set DAYTONA_API_KEY (and optionally DAYTONA_BASE_URL) to use the daytona provider")?;
+            Ok(Box::new(p))
+        }
         other => anyhow::bail!(
-            "unknown SHEPHERD_PROVIDER '{other}'; only 'docker' is implemented so far"
+            "unknown SHEPHERD_PROVIDER '{other}'; use 'docker' or 'daytona'"
         ),
     }
 }
