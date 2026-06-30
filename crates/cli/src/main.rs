@@ -1,5 +1,6 @@
 //! The `shepherd` binary: launch and manage persistent cloud sandbox agents.
 
+mod attach;
 mod store;
 
 use std::collections::HashMap;
@@ -47,6 +48,11 @@ enum Command {
         #[arg(long, default_value = DEFAULT_IMAGE)]
         image: String,
     },
+    /// Attach an interactive terminal to a session's sandbox.
+    Attach {
+        /// Session id.
+        session: String,
+    },
     /// List sessions and their live sandbox status.
     Ls,
     /// Tear down a session and its sandbox.
@@ -68,6 +74,7 @@ async fn main() -> Result<()> {
         Command::Run { repo, prompt, title, image } => {
             run(&store, &provider, &repo, prompt, title, &image).await
         }
+        Command::Attach { session } => attach::attach(&store, &provider, &session).await,
         Command::Ls => ls(&store, &provider).await,
         Command::Rm { session } => rm(&store, &provider, &session).await,
     }
