@@ -1,4 +1,15 @@
-# Texting your agents from your phone (Telegram bridge)
+# Driving your agents from your phone
+
+There are two ways, and they complement each other. Both work with your laptop
+fully off, because the sandbox lives in the cloud, not on your machine.
+
+- Text bridge (this doc, below): message the agent and get replies over
+  Telegram. Best for quick steering and notifications.
+- Live terminal (herdr-style, see the last section): a real terminal into the
+  running box from your phone, reattaching to the live agent session. Best for
+  watching it work and running commands yourself.
+
+## Text bridge (Telegram)
 
 The bridge lets you drive cloud sessions from your phone. Because the sandbox
 already runs in the cloud and survives power-off, your phone only needs to reach
@@ -56,3 +67,34 @@ your repo); once a session exists, you drive it entirely from your phone.
   sandbox (use `shepherd logs` from a computer for everything).
 - Waking an archived sandbox (auto-archived after a day) takes a little longer
   than waking a stopped one, but neither needs your laptop.
+
+## Live terminal (herdr-style)
+
+herdr's mobile model is: SSH into a persistent box and reattach to the live
+agent panes. Shepherd does the same, except the persistent box is already the
+cloud sandbox, so there is no separate machine to keep on and it survives
+power-off.
+
+The agent runs inside a tmux session named `shepherd` in the box (it stays alive
+after the agent finishes, so you can always reattach). To get a terminal into the
+box from your phone, use the cloud provider's native access:
+
+- Daytona web terminal: open the sandbox's web terminal in your phone browser
+  (no app needed). See the Daytona dashboard, or the platform docs on the web
+  terminal.
+- Daytona SSH: from a phone SSH client (Blink, Termius), SSH into the sandbox.
+
+Once you have a shell in the box, reattach to the live agent:
+
+```sh
+tmux attach -t shepherd
+```
+
+You see exactly what the agent is doing, can scroll, and can type commands in the
+same pane. Detaching (tmux `Ctrl-b d`, or just closing the app) leaves the agent
+running. This is the herdr experience, with the box in the cloud.
+
+Note: `shepherd attach <session>` does the same reattach automatically, but only
+the docker provider has interactive attach wired today. Wiring `shepherd attach`
+for Daytona (over its PTY/SSH) so you do not need the manual tmux step is the
+remaining cloud-attach work (PLAN.md M10).
