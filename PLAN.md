@@ -232,8 +232,10 @@ shepherd/
 - M7 Cloud provider (E2B): first real always on target plus snapshot/suspend.
 - M8 Secrets plus MCP: secret injection, MCP config sync, OAuth surfacing.
 - M9 Fan out: multiple sessions, status board, branch per session.
-- M10 Mobile attach: reach a running session from a phone terminal app over SSH
-  to the control plane (herdr parity, but the box is in the cloud).
+- M10 Cloud and mobile attach: wire interactive attach for the cloud provider
+  and reach a running session from a phone terminal app (herdr parity, but the
+  box is in the cloud). Daytona exposes both a PTY API and SSH access for this;
+  the Rust crate is REST only, so this needs a small websocket or SSH bridge.
 - M11 Messaging bridge: a chat bot (Telegram first) bound to sessions, so you
   text a prompt from your phone and the cloud agent works and replies, plus push
   notifications when an agent finishes or needs input.

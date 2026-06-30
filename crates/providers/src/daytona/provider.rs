@@ -5,6 +5,14 @@
 //! the live service (needs a DAYTONA_API_KEY). Mappings worth revalidating when
 //! a key is available are marked NOTE.
 //!
+//! Caveat: daytona-client 0.5 calls Daytona's older `/toolbox/{id}/toolbox/...`
+//! exec and file endpoints, which the current API marks deprecated (the
+//! supported routes are `/process/execute`, `/files/upload`, `/files/download`).
+//! They should still work for a first run; if the live test fails here, the
+//! follow-up is to hand-roll these calls with reqwest against the current API
+//! rather than the unofficial crate. The workspace mount is set by the CLI to a
+//! path the `daytona` user can write (/home/daytona/workspace).
+//!
 //! Mapping onto Daytona:
 //! - SandboxSpec.image  -> Daytona snapshot name (Daytona boots from snapshots,
 //!   not raw Docker images; build a snapshot from images/base/Dockerfile).

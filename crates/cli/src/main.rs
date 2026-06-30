@@ -147,7 +147,12 @@ async fn run(
 
     let repo = repo.canonicalize().with_context(|| format!("repo path {repo:?}"))?;
     println!("capturing workspace from {repo:?} ...");
-    let git_spec = capture_local_workspace(&repo)?;
+    let mut git_spec = capture_local_workspace(&repo)?;
+    // Place the workspace where the provider's default user can actually write.
+    // Daytona sandboxes run as the `daytona` user, so / is not writable.
+    if git_spec.mount_path.is_none() {
+        git_spec.mount_path = Some(default_mount_for(&provider.id()).to_string());
+    }
     let dirty = git_spec
         .dirty_overlay
         .as_ref()
@@ -339,6 +344,15 @@ async fn rm(store: &Store, provider: &dyn SandboxProvider, session: &str) -> Res
 
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+/// Where to clone the workspace, per provider. Daytona runs as the unprivileged
+/// `daytona` user whose home is /home/daytona, so / is not writable.
+fn default_mount_for(provider_id: &str) -> &'static str {
+    match provider_id {
+        "daytona" => "/home/daytona/workspace",
+        _ => "/workspace",
+    }
 }
 
 fn state_db_path() -> PathBuf {
