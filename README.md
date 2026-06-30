@@ -23,21 +23,47 @@ See [PLAN.md](./PLAN.md) for the full architecture and roadmap.
 
 ## Status
 
-Early development. Building the local Docker vertical slice first (no cloud
-account required), then E2B and Fly cloud providers. Track progress in
+Early development. The local Docker vertical slice works today: capture a repo,
+seed a sandbox, register the session, and attach an interactive terminal that
+you can detach from and reattach to. Cloud providers (E2B, Fly) and live
+headless Claude execution are next. Track progress in
 [PLAN.md section 11](./PLAN.md#11-milestones).
 
-## Build
+What works now: `run`, `ls`, `attach`, `rm` against local Docker.
+Not yet: running the agent (claude) automatically, and surviving a full
+power-off (that needs a cloud provider, M7). For now the box lives in your
+local Docker, so the machine stays on.
 
-Requires a recent stable Rust toolchain and (for the Docker provider) a running
-Docker daemon.
+## Prerequisites
+
+- A recent stable Rust toolchain (`rustup`).
+- A running Docker daemon (Docker Desktop on macOS).
+- The repo you point at must have a git `origin` remote that is pushed, since
+  seeding clones from the remote and overlays your uncommitted changes.
+
+## Install
 
 ```sh
-cargo build
-cargo test
+cargo install --path crates/cli   # installs the `shepherd` binary to ~/.cargo/bin
 ```
 
-The `shepherd` binary is produced by the `cli` crate.
+Or build without installing:
+
+```sh
+cargo build --release             # binary at target/release/shepherd
+cargo test                        # run the unit tests
+```
+
+## Use
+
+```sh
+shepherd run --repo .             # seed a sandbox from the current repo
+shepherd ls                       # list sessions and live sandbox status
+shepherd attach <session-id>      # interactive terminal in the box; Ctrl-] to detach
+shepherd rm <session-id>          # tear down the sandbox and forget the session
+```
+
+Session state lives at `~/.shepherd/state.sqlite`.
 
 ## Architecture in one breath
 
