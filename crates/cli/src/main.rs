@@ -1,6 +1,7 @@
 //! The `shepherd` binary: launch and manage persistent cloud sandbox agents.
 
 mod attach;
+mod bot;
 mod store;
 
 use std::collections::HashMap;
@@ -81,6 +82,8 @@ enum Command {
         /// Session id.
         session: String,
     },
+    /// Run the messaging bridge (text your agents from your phone over Telegram).
+    Serve,
 }
 
 #[tokio::main]
@@ -98,6 +101,7 @@ async fn main() -> Result<()> {
         Command::Logs { session, raw } => logs(&store, provider, &session, raw).await,
         Command::Ls => ls(&store, provider).await,
         Command::Rm { session } => rm(&store, provider, &session).await,
+        Command::Serve => bot::run_bot(&store, provider).await,
     }
 }
 

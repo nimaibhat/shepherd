@@ -72,6 +72,12 @@ keep working after you shut the laptop. See [docs/daytona.md](./docs/daytona.md)
 for setup. The Daytona adapter is implemented but not yet validated against the
 live service; the local Docker path is the tested one today.
 
+### From your phone
+
+`shepherd serve` runs a Telegram bridge so you can text your cloud agents from
+your phone, with the sandbox woken on demand and no laptop required. See
+[docs/mobile.md](./docs/mobile.md).
+
 ## Architecture in one breath
 
 ```
