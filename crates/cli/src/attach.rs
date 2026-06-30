@@ -34,10 +34,18 @@ pub async fn attach(store: &Store, provider: &dyn SandboxProvider, session: &str
     let mut env = HashMap::new();
     env.insert("TERM".to_string(), "xterm-256color".to_string());
 
+    // Attach to the agent's live tmux session if it exists, else a plain shell.
+    // tmux detaches cleanly on hangup, so detaching here never kills the agent.
+    let tmux = crate::TMUX_SESSION;
+    let command = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!("tmux attach-session -t {tmux} 2>/dev/null || exec sh -l"),
+    ];
     let pty = provider
         .attach_pty(
             &sandbox_id,
-            &["/bin/sh".to_string()],
+            &command,
             PtyOptions {
                 cwd: Some(mount.clone()),
                 env,

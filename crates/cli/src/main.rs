@@ -34,6 +34,13 @@ const FORWARDED_SECRETS: &[&str] = &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"
 
 const SESSION_LABEL: &str = "shepherd.session";
 
+/// The in-box tmux session the agent runs in, so it is reattachable from any
+/// terminal (your laptop, or your phone over SSH / the cloud web terminal).
+const TMUX_SESSION: &str = "shepherd";
+
+/// Where the agent tees its output, relative to the workspace mount.
+const AGENT_LOG_REL: &str = ".shepherd/agent.log";
+
 #[derive(Parser)]
 #[command(name = "shepherd", version, about = "Persistent cloud sandbox AI coding agents")]
 struct Cli {
@@ -251,8 +258,11 @@ async fn run(
     }
 }
 
-/// Launch the headless agent DETACHED inside the box so it keeps running after
-/// the CLI exits or the laptop powers off. Watch it later with `shepherd logs`.
+/// Launch the headless agent inside a reattachable tmux session in the box, so
+/// it keeps running after the CLI exits or the laptop powers off, and you can
+/// reattach to the live terminal from anywhere (`shepherd attach`, or SSH / the
+/// cloud web terminal from your phone). Output is also tee'd to a log so
+/// `shepherd logs` works without an interactive terminal.
 async fn launch_agent(
     store: &Store,
     provider: &dyn SandboxProvider,
@@ -261,7 +271,6 @@ async fn launch_agent(
     mount: &str,
     prompt: &str,
 ) -> Result<()> {
-    let log_path = agent_log_path(mount);
     let runner = ClaudeRunner::default();
     let req = RunRequest {
         sandbox_id: sandbox_id.clone(),
@@ -271,23 +280,52 @@ async fn launch_agent(
         allowed_tools: Vec::new(),
         env: HashMap::new(),
     };
-    let script = runner.detached_launch(&req, &log_path);
-    let res = provider
-        .exec(
-            sandbox_id,
-            &["sh".into(), "-c".into(), script],
-            ExecOptions { cwd: Some(mount.to_string()), env: HashMap::new() },
-        )
+
+    // Write the agent invocation to a script, then run it in a detached tmux
+    // session that drops to a shell when the agent exits (so the pane, and any
+    // state, survives for reattach).
+    let script = format!("#!/bin/sh\ncd {mount}\n{} 2>&1 | tee {AGENT_LOG_REL}\n", runner.command_line(&req));
+    run_in_box(provider, sandbox_id, &format!("mkdir -p {mount}/.shepherd"), mount).await?;
+    provider
+        .put_file(sandbox_id, &format!("{mount}/.shepherd/run.sh"), script.as_bytes(), 0o755)
         .await?;
+    run_in_box(
+        provider,
+        sandbox_id,
+        &format!("tmux new-session -d -s {TMUX_SESSION} 'sh {mount}/.shepherd/run.sh; exec sh -l'"),
+        mount,
+    )
+    .await?;
 
     session.status = SessionStatus::Running;
     session.updated_at = now();
     store.upsert(session)?;
 
-    println!("  agent launched in background (pid {})", res.stdout.trim());
-    println!("  watch:  shepherd logs {}", session.id);
+    println!("  agent launched in tmux session '{TMUX_SESSION}'");
+    println!("  watch live:  shepherd attach {}", session.id);
+    println!("  or tail log: shepherd logs {}", session.id);
     println!("  (you can close your laptop now; it keeps running in the sandbox)");
     Ok(())
+}
+
+/// Run a shell command in the box, erroring on a non-zero exit.
+async fn run_in_box(
+    provider: &dyn SandboxProvider,
+    id: &shepherd_core::ids::SandboxId,
+    script: &str,
+    cwd: &str,
+) -> Result<String> {
+    let res = provider
+        .exec(
+            id,
+            &["sh".into(), "-c".into(), script.to_string()],
+            ExecOptions { cwd: Some(cwd.to_string()), env: HashMap::new() },
+        )
+        .await?;
+    if res.exit_code != 0 {
+        anyhow::bail!("command failed (exit {}): {script}\n{}", res.exit_code, res.stderr);
+    }
+    Ok(res.stdout)
 }
 
 /// Show a session's detached agent log, parsed into events (or raw with --raw).
@@ -337,9 +375,9 @@ async fn logs(store: &Store, provider: &dyn SandboxProvider, session: &str, raw:
     Ok(())
 }
 
-/// Convention for where a session's detached agent writes its log inside the box.
+/// Convention for where a session's agent tees its log inside the box.
 fn agent_log_path(mount: &str) -> String {
-    format!("{mount}/.shepherd/agent.log")
+    format!("{mount}/{AGENT_LOG_REL}")
 }
 
 fn print_event(ev: &AgentEvent) {

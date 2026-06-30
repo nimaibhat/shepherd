@@ -12,6 +12,7 @@ RUN apt-get update \
         ca-certificates \
         curl \
         tar \
+        tmux \
     && rm -rf /var/lib/apt/lists/*
 
 # The headless agent we drive (PLAN.md section 6).
