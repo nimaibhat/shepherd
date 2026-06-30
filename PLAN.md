@@ -232,8 +232,45 @@ shepherd/
 - M7 Cloud provider (E2B): first real always on target plus snapshot/suspend.
 - M8 Secrets plus MCP: secret injection, MCP config sync, OAuth surfacing.
 - M9 Fan out: multiple sessions, status board, branch per session.
+- M10 Mobile attach: reach a running session from a phone terminal app over SSH
+  to the control plane (herdr parity, but the box is in the cloud).
+- M11 Messaging bridge: a chat bot (Telegram first) bound to sessions, so you
+  text a prompt from your phone and the cloud agent works and replies, plus push
+  notifications when an agent finishes or needs input.
 
-## 12. Non goals (for now)
+## 12. Mobile and messaging control
+
+Because every box already runs in the cloud and survives the laptop being off,
+the phone does not need to reach your machine at all, it reaches the control
+plane. Two complementary paths:
+
+1. Mobile attach (M10), herdr parity. Run a phone SSH client (Blink, Termius)
+   against the control plane and use `shepherd attach <id>`. The session is a
+   cloud box, so this works with the laptop fully off, which herdr cannot do
+   (herdr's box is wherever its binary runs, often your machine).
+
+2. Messaging bridge (M11), the "text it from my phone" experience. A persistent
+   bot endpoint on the control plane maps a chat to a session:
+   - You text a prompt. The bridge injects it as a turn into the headless agent
+     (`claude -p --resume <agent_session_id>`) in that session's sandbox.
+   - The agent works in the cloud. stream-json output is summarized and relayed
+     back to the chat; long output links to the full transcript.
+   - Push notifications fire when a run finishes, hits an error, or needs input
+     (for example an interactive MCP re-auth, see section 5). This is the part
+     herdr has no answer for.
+
+   Telegram first: free, bidirectional, rich bot API, no SMS or phone number
+   cost, easy push. SMS (Twilio) and Slack are later adapters behind the same
+   bridge interface. The bridge is a thin control channel, not a full UI; the
+   terminal stays the primary surface (see non goals).
+
+   This is feasible precisely because of the architecture we already chose:
+   agents run 24/7 in the cloud, headless Claude resumes by session id, and the
+   control plane is a long lived service that can host a webhook. Prior art
+   exists: agent-deck's "conductor" sessions already relay to Telegram/Slack and
+   escalate to a human.
+
+## 13. Non goals (for now)
 
 - Reimplementing the agent loop (we drive Claude Code headless).
 - A web UI (terminal first, web can come later).
