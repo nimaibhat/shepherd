@@ -119,7 +119,10 @@ impl SandboxProvider for DockerProvider {
 
         let config = Config {
             image: Some(spec.image.clone()),
-            cmd: Some(self.keep_alive_cmd.clone()),
+            // Override the entrypoint (not just cmd) so the box stays alive
+            // regardless of the base image's ENTRYPOINT; we exec into it.
+            entrypoint: Some(self.keep_alive_cmd.clone()),
+            cmd: None,
             labels: Some(labels.clone()),
             env: Some(env),
             tty: Some(false),

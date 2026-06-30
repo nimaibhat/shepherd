@@ -898,6 +898,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "shepherd-agent"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "shepherd-core",
+ "shepherd-providers",
+ "tokio",
+]
+
+[[package]]
 name = "shepherd-core"
 version = "0.0.0"
 dependencies = [
