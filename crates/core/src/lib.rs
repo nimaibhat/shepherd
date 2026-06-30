@@ -11,8 +11,8 @@ pub use agent::{AgentEvent, AgentRunner, RunRequest, RunResult};
 pub use errors::{Error, Result};
 pub use ids::{ProviderId, SandboxId, SessionId};
 pub use sandbox::{
-    ExecOptions, ExecResult, PtyControl, PtyOptions, PtySession, Sandbox, SandboxProvider,
-    SandboxResources, SandboxSpec, SandboxStatus,
+    ConnectionInfo, ExecOptions, ExecResult, PtyControl, PtyOptions, PtySession, Sandbox,
+    SandboxProvider, SandboxResources, SandboxSpec, SandboxStatus,
 };
 pub use session::{default_branch_for, Session, SessionStatus};
 pub use workspace::{

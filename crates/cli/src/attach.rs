@@ -13,7 +13,7 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::oneshot;
 
 use shepherd_core::ids::SessionId;
-use shepherd_core::sandbox::{PtyControl, PtyOptions, SandboxProvider};
+use shepherd_core::sandbox::{ConnectionInfo, PtyControl, PtyOptions, SandboxProvider};
 
 use crate::store::Store;
 
@@ -29,6 +29,13 @@ pub async fn attach(store: &Store, provider: &dyn SandboxProvider, session: &str
         bail!("session {session} has no sandbox");
     };
     let mount = s.workspace.mount_path().to_string();
+
+    // Cloud providers expose interactive access out of band (ssh / web terminal)
+    // rather than an in-process PTY stream. Use that when present.
+    let conn = provider.connection_info(&sandbox_id).await.unwrap_or_default();
+    if conn.web_terminal_url.is_some() || conn.ssh_target.is_some() {
+        return attach_remote(&conn);
+    }
 
     let (cols, rows) = size().unwrap_or((80, 24));
     let mut env = HashMap::new();
@@ -68,6 +75,34 @@ pub async fn attach(store: &Store, provider: &dyn SandboxProvider, session: &str
         Outcome::Closed => println!("connection closed. sandbox still running."),
     }
     Ok(())
+}
+
+/// Interactive attach for cloud boxes: print the phone-friendly web terminal
+/// URL, and (if available) drop the user straight into the live tmux session
+/// over ssh using the system ssh client.
+fn attach_remote(conn: &ConnectionInfo) -> Result<()> {
+    let tmux = crate::TMUX_SESSION;
+    if let Some(url) = &conn.web_terminal_url {
+        println!("web terminal (open on your phone): {url}");
+        println!("  once in, run: tmux attach -t {tmux}");
+    }
+    let Some(ssh) = &conn.ssh_target else {
+        return Ok(());
+    };
+    println!("connecting over ssh (detach leaves the agent running) ...");
+    let remote_cmd = format!("tmux attach -t {tmux} || exec sh -l");
+    let status = std::process::Command::new("ssh")
+        .args(["-t", "-o", "StrictHostKeyChecking=accept-new"])
+        .arg(ssh)
+        .arg(&remote_cmd)
+        .status();
+    match status {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            println!("could not launch ssh ({e}); open the web terminal above instead.");
+            Ok(())
+        }
+    }
 }
 
 enum Outcome {

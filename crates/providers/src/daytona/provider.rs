@@ -35,8 +35,8 @@ use uuid::Uuid;
 use shepherd_core::errors::{Error, Result};
 use shepherd_core::ids::SandboxId;
 use shepherd_core::sandbox::{
-    ExecOptions, ExecResult, PtyOptions, PtySession, Sandbox, SandboxProvider, SandboxSpec,
-    SandboxStatus,
+    ConnectionInfo, ExecOptions, ExecResult, PtyOptions, PtySession, Sandbox, SandboxProvider,
+    SandboxSpec, SandboxStatus,
 };
 
 const MANAGED_LABEL: &str = "shepherd.managed";
@@ -51,20 +51,58 @@ const AUTO_ARCHIVE_MINUTES: u32 = 1440; // 1 day
 
 pub struct DaytonaProvider {
     client: DaytonaClient,
+    // Kept for the few calls the crate does not cover (ssh-access), which we
+    // hand-roll against the REST API with the same auth.
+    http: reqwest::Client,
+    base_url: String,
+    api_key: String,
+    organization_id: Option<String>,
 }
 
 impl DaytonaProvider {
     /// Build from DAYTONA_API_KEY (and optional DAYTONA_BASE_URL) in the env.
     pub fn from_env() -> Result<Self> {
-        let config = DaytonaConfig::from_env().map_err(dy)?;
-        let client = DaytonaClient::new(config).map_err(dy)?;
-        Ok(Self { client })
+        Self::from_config(DaytonaConfig::from_env().map_err(dy)?)
     }
 
     /// Build from an explicit API key.
     pub fn with_api_key(api_key: impl Into<String>) -> Result<Self> {
-        let client = DaytonaClient::new(DaytonaConfig::new(api_key)).map_err(dy)?;
-        Ok(Self { client })
+        Self::from_config(DaytonaConfig::new(api_key))
+    }
+
+    fn from_config(config: DaytonaConfig) -> Result<Self> {
+        let base_url = config.base_url.clone();
+        let api_key = config.api_key.clone();
+        let organization_id = config.organization_id.clone();
+        let client = DaytonaClient::new(config).map_err(dy)?;
+        Ok(Self {
+            client,
+            http: reqwest::Client::new(),
+            base_url,
+            api_key,
+            organization_id,
+        })
+    }
+
+    /// Mint a short-lived SSH token and return an `ssh` destination for it.
+    /// Hand-rolled because daytona-client 0.5 does not expose ssh-access.
+    async fn create_ssh_target(&self, id: &SandboxId) -> Result<String> {
+        let url = format!("{}/sandbox/{}/ssh-access?expiresInMinutes=120", self.base_url, id);
+        let mut req = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key));
+        if let Some(org) = &self.organization_id {
+            req = req.header("X-Daytona-Organization-ID", org);
+        }
+        let resp = req.send().await.map_err(http_err)?.error_for_status().map_err(http_err)?;
+
+        #[derive(serde::Deserialize)]
+        struct SshAccessDto {
+            token: String,
+        }
+        let dto: SshAccessDto = resp.json().await.map_err(http_err)?;
+        Ok(format!("{}@ssh.app.daytona.io", dto.token))
     }
 }
 
@@ -144,9 +182,19 @@ impl SandboxProvider for DaytonaProvider {
     }
 
     async fn attach_pty(&self, _id: &SandboxId, _command: &[String], _opts: PtyOptions) -> Result<PtySession> {
-        // Interactive terminals over Daytona are future work (sessions or a
-        // preview-url/SSH bridge). Until then, use exec or the mobile attach path.
+        // No in-process PTY stream over the REST crate. Interactive attach goes
+        // through connection_info (ssh / web terminal) instead.
         Err(self.not_supported("attach_pty"))
+    }
+
+    async fn connection_info(&self, id: &SandboxId) -> Result<ConnectionInfo> {
+        Ok(ConnectionInfo {
+            // Deterministic per-sandbox browser terminal (open it from a phone).
+            web_terminal_url: Some(format!("https://22222-{id}.proxy.daytona.work")),
+            // Best-effort: minting a token can fail (e.g. box stopped); the web
+            // terminal still works, so do not hard-fail attach on this.
+            ssh_target: self.create_ssh_target(id).await.ok(),
+        })
     }
 
     async fn put_file(&self, id: &SandboxId, path: &str, content: &[u8], _mode: u32) -> Result<()> {
@@ -197,6 +245,10 @@ impl DaytonaProvider {
 /// Map a Daytona error into our error type.
 fn dy(e: daytona_client::DaytonaError) -> Error {
     Error::Other(anyhow!(e.to_string()))
+}
+
+fn http_err(e: reqwest::Error) -> Error {
+    Error::Other(anyhow!("daytona ssh-access request failed: {e}"))
 }
 
 fn is_not_found(e: &daytona_client::DaytonaError) -> bool {

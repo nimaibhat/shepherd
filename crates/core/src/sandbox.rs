@@ -84,6 +84,17 @@ pub struct PtyOptions {
     pub rows: Option<u16>,
 }
 
+/// How to reach a box interactively from outside the control plane. Cloud
+/// providers fill this in (a browser web terminal, an ssh destination); local
+/// providers leave it empty and use [`SandboxProvider::attach_pty`] instead.
+#[derive(Debug, Clone, Default)]
+pub struct ConnectionInfo {
+    /// A browser-openable terminal URL (e.g. from a phone), if the provider has one.
+    pub web_terminal_url: Option<String>,
+    /// An ssh destination (`user@host`) for an interactive session, if available.
+    pub ssh_target: Option<String>,
+}
+
 /// An attached, reattachable interactive terminal.
 ///
 /// The provider wires the channels to the box: write to `input`, read terminal
@@ -116,6 +127,13 @@ pub trait SandboxProvider: Send + Sync {
 
     /// Attach an interactive, reattachable terminal (e.g. `claude` itself).
     async fn attach_pty(&self, id: &SandboxId, command: &[String], opts: PtyOptions) -> Result<PtySession>;
+
+    /// How to reach the box interactively from outside (cloud providers). The
+    /// default is empty, meaning the caller should use `attach_pty` for a local
+    /// in-process terminal.
+    async fn connection_info(&self, _id: &SandboxId) -> Result<ConnectionInfo> {
+        Ok(ConnectionInfo::default())
+    }
 
     /// Write a single file into the box (seeding overlays, configs).
     async fn put_file(&self, id: &SandboxId, path: &str, content: &[u8], mode: u32) -> Result<()>;

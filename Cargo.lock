@@ -1540,6 +1540,8 @@ dependencies = [
  "chrono",
  "daytona-client",
  "futures-util",
+ "reqwest",
+ "serde",
  "shepherd-core",
  "tar",
  "tokio",
