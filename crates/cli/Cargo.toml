@@ -1,0 +1,24 @@
+[package]
+name = "shepherd-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "shepherd"
+path = "src/main.rs"
+
+[dependencies]
+shepherd-core = { workspace = true }
+shepherd-providers = { workspace = true }
+shepherd-agent = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+futures-util = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", features = ["clock"] }
+crossterm = "0.28"
