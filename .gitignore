@@ -1,0 +1,20 @@
+# rust build output
+/target/
+**/*.rs.bk
+
+# env / secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# shepherd local state (dev)
+.shepherd/
+*.sqlite
+*.sqlite-journal
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json

@@ -1,0 +1,28 @@
+{
+  "name": "@shepherd/providers",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@shepherd/core": "workspace:*",
+    "dockerode": "^4.0.2",
+    "tar-stream": "^3.1.7"
+  },
+  "devDependencies": {
+    "@types/dockerode": "^3.3.31",
+    "@types/tar-stream": "^3.1.3"
+  }
+}
