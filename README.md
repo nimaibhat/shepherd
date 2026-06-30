@@ -65,6 +65,13 @@ shepherd rm <session-id>          # tear down the sandbox and forget the session
 
 Session state lives at `~/.shepherd/state.sqlite`.
 
+### Cloud (survives power-off)
+
+Set `SHEPHERD_PROVIDER=daytona` to run sandboxes in Daytona's cloud so sessions
+keep working after you shut the laptop. See [docs/daytona.md](./docs/daytona.md)
+for setup. The Daytona adapter is implemented but not yet validated against the
+live service; the local Docker path is the tested one today.
+
 ## Architecture in one breath
 
 ```
