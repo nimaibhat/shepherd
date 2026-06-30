@@ -14,14 +14,13 @@ use tokio::sync::oneshot;
 
 use shepherd_core::ids::SessionId;
 use shepherd_core::sandbox::{PtyControl, PtyOptions, SandboxProvider};
-use shepherd_providers::DockerProvider;
 
 use crate::store::Store;
 
 /// Ctrl-] detaches, leaving the sandbox running.
 const DETACH_BYTE: u8 = 0x1d;
 
-pub async fn attach(store: &Store, provider: &DockerProvider, session: &str) -> Result<()> {
+pub async fn attach(store: &Store, provider: &dyn SandboxProvider, session: &str) -> Result<()> {
     let id: SessionId = session.into();
     let Some(s) = store.get(&id)? else {
         bail!("no such session: {session}");

@@ -79,24 +79,40 @@ enum Command {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let store = Store::open(&state_db_path())?;
-    let provider = DockerProvider::connect().context(
-        "could not connect to Docker; is the Docker daemon running?",
-    )?;
+    let provider = make_provider()?;
+    let provider = provider.as_ref();
 
     match cli.command {
         Command::Run { repo, prompt, title, image, agent } => {
-            run(&store, &provider, &repo, prompt, title, &image, agent).await
+            run(&store, provider, &repo, prompt, title, &image, agent).await
         }
-        Command::Attach { session } => attach::attach(&store, &provider, &session).await,
-        Command::Ls => ls(&store, &provider).await,
-        Command::Rm { session } => rm(&store, &provider, &session).await,
+        Command::Attach { session } => attach::attach(&store, provider, &session).await,
+        Command::Ls => ls(&store, provider).await,
+        Command::Rm { session } => rm(&store, provider, &session).await,
+    }
+}
+
+/// Select the sandbox backend. Today only the local Docker provider is wired;
+/// cloud providers (E2B, Fly) plug in here behind the same trait. Override with
+/// the SHEPHERD_PROVIDER env var.
+fn make_provider() -> Result<Box<dyn SandboxProvider>> {
+    let name = std::env::var("SHEPHERD_PROVIDER").unwrap_or_else(|_| "docker".to_string());
+    match name.as_str() {
+        "docker" => {
+            let p = DockerProvider::connect()
+                .context("could not connect to Docker; is the Docker daemon running?")?;
+            Ok(Box::new(p))
+        }
+        other => anyhow::bail!(
+            "unknown SHEPHERD_PROVIDER '{other}'; only 'docker' is implemented so far"
+        ),
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn run(
     store: &Store,
-    provider: &DockerProvider,
+    provider: &dyn SandboxProvider,
     repo: &Path,
     prompt: Option<String>,
     title: Option<String>,
@@ -207,7 +223,7 @@ async fn run(
 /// Launch the headless agent in the seeded box and stream its events.
 async fn run_agent(
     store: &Store,
-    provider: &DockerProvider,
+    provider: &dyn SandboxProvider,
     session: &mut Session,
     sandbox_id: &shepherd_core::ids::SandboxId,
     mount: &str,
@@ -272,7 +288,7 @@ fn print_event(ev: &AgentEvent) {
     }
 }
 
-async fn ls(store: &Store, provider: &DockerProvider) -> Result<()> {
+async fn ls(store: &Store, provider: &dyn SandboxProvider) -> Result<()> {
     let sessions = store.list()?;
     if sessions.is_empty() {
         println!("no sessions. start one with: shepherd run --repo <path>");
@@ -303,7 +319,7 @@ async fn ls(store: &Store, provider: &DockerProvider) -> Result<()> {
     Ok(())
 }
 
-async fn rm(store: &Store, provider: &DockerProvider, session: &str) -> Result<()> {
+async fn rm(store: &Store, provider: &dyn SandboxProvider, session: &str) -> Result<()> {
     let id: SessionId = session.into();
     let Some(s) = store.get(&id)? else {
         anyhow::bail!("no such session: {session}");
