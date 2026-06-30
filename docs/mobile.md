@@ -84,17 +84,23 @@ box from your phone, use the cloud provider's native access:
   terminal.
 - Daytona SSH: from a phone SSH client (Blink, Termius), SSH into the sandbox.
 
-Once you have a shell in the box, reattach to the live agent:
+`shepherd attach <session>` does this for you on Daytona: it prints the web
+terminal URL and, using the system `ssh` client, drops you straight into the
+live `shepherd` tmux session (it mints a short-lived SSH token under the hood).
+Detaching leaves the agent running.
+
+If you prefer to connect by hand (for example from a phone), use either:
 
 ```sh
+# browser, no app: open the web terminal URL shepherd printed, then
+tmux attach -t shepherd
+
+# or from a phone SSH client, once you have a shell in the box
 tmux attach -t shepherd
 ```
 
 You see exactly what the agent is doing, can scroll, and can type commands in the
-same pane. Detaching (tmux `Ctrl-b d`, or just closing the app) leaves the agent
-running. This is the herdr experience, with the box in the cloud.
+same pane. This is the herdr experience, with the box in the cloud.
 
-Note: `shepherd attach <session>` does the same reattach automatically, but only
-the docker provider has interactive attach wired today. Wiring `shepherd attach`
-for Daytona (over its PTY/SSH) so you do not need the manual tmux step is the
-remaining cloud-attach work (PLAN.md M10).
+Note: the Daytona attach path is built but not yet validated against the live
+service; it will be exercised during Daytona validation.
